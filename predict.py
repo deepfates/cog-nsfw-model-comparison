@@ -1,6 +1,8 @@
 # Prediction interface for Cog ⚙️
 # https://github.com/replicate/cog/blob/main/docs/python.md
 
+import base64
+from io import BytesIO
 from cog import BasePredictor, Input, Path, BaseModel
 import torch
 import os
@@ -16,6 +18,7 @@ from transformers import (
 from diffusers.pipelines.stable_diffusion.safety_checker import (
     StableDiffusionSafetyChecker,
 )
+from openai import OpenAI
 
 FALCON_MODEL_NAME = "Falconsai/nsfw_image_detection"
 FALCON_MODEL_CACHE = "model-cache"
@@ -73,18 +76,41 @@ def run_falcon_safety_checker(self, image):
     is_safe = result == "normal"
     return is_safe, end_time - start_time
 
+def run_openai_safety_checker(self, image):
+    start_time = time.time()
+    # Convert PIL Image to base64
+    buffered = BytesIO()
+    image.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode()
+    
+    response = self.openai_client.moderations.create(
+        model="omni-moderation-latest",
+        input=[{
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/png;base64,{img_str}"
+            }
+        }]
+    )
+    end_time = time.time()
+    print(f"OpenAI safety check took {end_time - start_time:.2f} seconds")
+    return response.results[0].flagged, end_time - start_time, response.results[0].categories, response.results[0].category_scores
+
 
 class SafetyCheckResult(BaseModel):
     falcon_is_safe: bool
     falcon_time_taken: float
     compvis_is_safe: bool
     compvis_time_taken: float
+    openai_is_safe: bool
+    openai_categories: list[str]
+    openai_scores: list[float]
+    openai_time_taken: float
 
 
 class Predictor(BasePredictor):
     def setup(self) -> None:
         """Load the model into memory to make running multiple predictions efficient"""
-
         download_weights(FALCON_MODEL_URL, FALCON_MODEL_CACHE)
         download_weights(COMPVIS_MODEL_URL, COMPVIS_MODEL_CACHE)
 
@@ -101,6 +127,8 @@ class Predictor(BasePredictor):
             COMPVIS_MODEL_FEATURE_EXTRACTOR
         )
 
+        self.openai_client = OpenAI()
+
     def predict(
         self,
         image: Path = Input(description="Input image"),
@@ -110,13 +138,18 @@ class Predictor(BasePredictor):
 
         falcon_output, falcon_time = run_falcon_safety_checker(self, img)
         compvis_output, compvis_time = run_compvis_safety_checker(self, img)
-
+        openai_output, openai_time, openai_categories, openai_scores = run_openai_safety_checker(self, img)
         print("Falcon output: ", falcon_output)
         print("Compvis output: ", compvis_output)
+        print("OpenAI output: ", openai_output)
 
         return SafetyCheckResult(
             falcon_is_safe=falcon_output,
             falcon_time_taken=falcon_time,
             compvis_is_safe=compvis_output,
             compvis_time_taken=compvis_time,
+            openai_is_safe=openai_output,
+            openai_time_taken=openai_time,
+            openai_categories=openai_categories,
+            openai_scores=openai_scores,
         )
