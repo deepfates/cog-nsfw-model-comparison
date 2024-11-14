@@ -3,3 +3,7 @@ __pycache__
 model-cache
 safety-cache
 .env
+*.jpeg
+*.jpg
+*.png
+*.webp
